@@ -18,8 +18,8 @@ using namespace std;
 
 // Macros
 #define SERVER_PORT 55921
-//#define SERVER_IP "192.168.1.75"
-#define SERVER_IP "136.159.5.22"
+#define SERVER_IP "192.168.1.75"
+//#define SERVER_IP "136.159.5.22"
 #define SIZE_OF_BUF 1000
 #define TEAMNAME "Pacheco\n"
 
@@ -241,6 +241,7 @@ void sendReport() {
             int it = 0;
             while (getline(stream, token, ',')) {
                 sourceList.append(token).append("\n");
+                cout << it << ": " << token << endl;
                 if (it > 2) {
                     peers.insert(token);
                 }
