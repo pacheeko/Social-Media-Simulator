@@ -18,6 +18,8 @@ using namespace std;
 #include<thread>
 #include <sys/types.h>
 #include <ifaddrs.h>
+#include <atomic>
+#include <mutex>
 #include "peer.cpp"
 
 // Macros
@@ -34,7 +36,9 @@ char* line;
 int sock_fd;
 typedef struct sockaddr_in sockaddr_in;
 sockaddr_in server;
-bool finished = false;
+atomic <bool> finished;
+string snip_string, peer_string;
+mutex mutex_snip, mutex_peer;
 
 // Functions
 void sendCode();
@@ -43,6 +47,9 @@ void sendReport();
 string getIPAddress();
 void registryConnect();
 void peerConnect();
+void setSnipString(string str);
+void setPeerString(string str);
+
 // Thread Functions
 void processSnip();
 void processPeer();
@@ -54,6 +61,7 @@ int main(int argc, char** argv) {
     Connects to the server specified in the macro SERVER_IP at port SERVER_PORT.
     Gives a response to the server based on the request sent by the server.
     */
+    finished = false;
 
     if(argc < 1) {
         fprintf(stderr,"This program does not accept args\r\n");
@@ -197,48 +205,44 @@ void registryConnect() {
 }
 
 void peerConnect() {
-    cout << "Connected to Peers"<< endl;
-    while(1) {
-        
+    cout << "Listening for peers"<< endl;
+            
+    // Set up UDP Server to listen for peer messages
+    // *** Some code taken from https://www.geeksforgeeks.org/udp-server-client-implementation-c/ ***
+    int udp_sockfd;
+    struct sockaddr_in servaddr, cliaddr;
+
+    // Creating socket file descriptor
+    if ( (udp_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0 ) {
+        perror("socket creation failed");
+        exit(EXIT_FAILURE);
     }
-/*
-        thread thread_snip, thread_peer;
-        // Creates and runs a thread for the end user to use
-        thread thread_user (&endUserMenu);
-        // Creates and runs a thread that sends information to other peers periodically
-        thread thread_send (&sendPeersPeriodically);
+        
+    memset(&servaddr, 0, sizeof(servaddr));
+    memset(&cliaddr, 0, sizeof(cliaddr));
+        
+    // Filling server information
+    servaddr.sin_family    = AF_INET; // IPv4
+    servaddr.sin_addr.s_addr = INADDR_ANY;
+    servaddr.sin_port = htons(PEER_PORT);
+        
+    // Bind the socket with the server address
+    if ( bind(udp_sockfd, (const struct sockaddr *)&servaddr, 
+            sizeof(servaddr)) < 0 )
+    {
+        perror("bind failed");
+        exit(EXIT_FAILURE);
+    }
+    int n;
 
-        // Set up UDP Server to listen for peer messages
-        // *** Some code taken from https://www.geeksforgeeks.org/udp-server-client-implementation-c/ ***
-        int udp_sockfd;
-        struct sockaddr_in servaddr, cliaddr;
-            
-        // Creating socket file descriptor
-        if ( (udp_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0 ) {
-            perror("socket creation failed");
-            exit(EXIT_FAILURE);
-        }
-            
-        memset(&servaddr, 0, sizeof(servaddr));
-        memset(&cliaddr, 0, sizeof(cliaddr));
-            
-        // Filling server information
-        servaddr.sin_family    = AF_INET; // IPv4
-        servaddr.sin_addr.s_addr = INADDR_ANY;
-        servaddr.sin_port = htons(PEER_PORT);
-            
-        // Bind the socket with the server address
-        if ( bind(udp_sockfd, (const struct sockaddr *)&servaddr, 
-                sizeof(servaddr)) < 0 )
-        {
-            perror("bind failed");
-            exit(EXIT_FAILURE);
-        }
-        cout << "UDP server running" << endl;
-        int n;
+        thread snip(&processSnip);
+        thread peer(&processPeer);
+        thread menu(&endUserMenu);
+        thread send(&sendPeersPeriodically);
 
-        while(1) {
 
+    while(1) {
+        cout << "UDP Server listening..." << endl;
         socklen_t len = sizeof(cliaddr);  //len is value/resuslt
 
         n = recvfrom(udp_sockfd, (char *)input, SIZE_OF_BUF, 
@@ -249,26 +253,33 @@ void peerConnect() {
 
         if (line.compare("stop") == 0) {
             finished = true;
-            thread_snip.join();
-            thread_peer.join();
-            thread_user.join();
-            thread_send.join();
+            cout << "Waiting for threads to finish execution..." << endl;
+            snip.join();
+            peer.join();
+            menu.join();
+            send.join();
+            cout << "Initiating shutdown procedure." << endl;
             break;
         }
 
         else if (line.compare("snip") == 0) {
-            thread newthread(&processSnip);
+            while (!snip_string.empty()) {
+
+            }
+            setSnipString(message.substr(4, message.size() - 4));
         }
 
         else if (line.compare("peer") == 0) {
-            thread newthread(&processPeer);
+            while (!peer_string.empty()) {
+
+            }
+            setPeerString(message.substr(4, message.size() - 4));
         }
 
         else {
-            cout << "Bad UDP Request" << endl;
+            cout << "Bad UDP request recieved." << endl;
         }
     }
-    */
 }
 
 /* 
@@ -303,6 +314,7 @@ void sendCode() {
 */
 void recievePeers(char * peers) {
     char * line = strtok(peers, "\n");
+    line = strtok(NULL, "\n");
     cout << "Adding " << string(line) << " new peer(s)." << endl;
     // ** some code used from https://stackoverflow.com/questions/997946/how-to-get-current-time-and-date-in-c to get current time **
     time_t time = std::time(0);
@@ -433,3 +445,17 @@ void sendPeersPeriodically() {
         //TODO
     }
 }
+
+//Setter functions for thread shared variables
+
+void setSnipString(string str) {
+    mutex_snip.lock();
+    snip_string = str;
+    mutex_snip.unlock();
+};
+
+void setPeerString(string str) {
+    mutex_peer.lock();
+    peer_string = str;
+    mutex_peer.unlock();
+};
