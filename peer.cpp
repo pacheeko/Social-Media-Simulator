@@ -12,6 +12,7 @@ using namespace std;
 #include<iostream>
 #include<fstream>
 #include<vector>
+#include<chrono>
 
 
 //Classes to keep track of Peers, Snippets, and UDP messages sent between peers
@@ -20,12 +21,14 @@ class Peer {
     private:
         string ip;
         string port;
+        int seconds_since_active;
 
     public:
         Peer(string addr) {
             int sep = addr.find(":");
             ip = addr.substr(0, sep);
             port = addr.substr(sep + 1, addr.size() - ip.size() - 1);
+            setActive();
         }
 
         void setAddress(string addr) {
@@ -44,19 +47,49 @@ class Peer {
         string getPort() {
             return port;
         }
+
+        void setActive() {
+            auto temp = std::chrono::system_clock::now().time_since_epoch().count();
+            seconds_since_active = (int) temp;
+        }
+
+        bool active() {
+            int current_time;
+            auto temp = std::chrono::system_clock::now().time_since_epoch().count();
+            current_time = (int) temp;
+            if (current_time - seconds_since_active > 10) {
+                return false;
+            } else {
+                return true;
+            }
+        }
+
+        bool equals(Peer p) {
+            if ((p.getIP().compare(this->ip) == 0) && (p.getPort().compare(this->port) == 0)) {
+                return true;
+            } else {
+                return false;
+            }
+        }
+
 };
 
 class Snippet {
     private:
-        int timepoint;
+        int timestamp;
         string message;
         Peer source;
+        string date;
 
     public:
-        Snippet(int t, string m, Peer p) : timepoint(t), message(m), source(p) {};
+        Snippet(int t, string m, Peer p, string d) : timestamp(t), message(m), source(p), date(d) {};
 
         string toString() {
-            return timepoint + " " + message + " " + source.getAddress();
+            return to_string(timestamp) + " " + message + " " + source.getAddress();
+        }
+
+        int getTimestamp() {
+            return timestamp;
         }
 };
 
@@ -71,7 +104,19 @@ class RecdPeer {
         RecdPeer(Peer s, Peer r, string d) : source(s), recd(r), date(d) {};
 
         string toString() {
-            return "Source: " + source.getAddress() + " -- Recieved: " + recd.getAddress() + " -- Date: " + date;
+            return source.getAddress() + " " + recd.getAddress() + " " + date;
+        }
+
+        Peer getSource() {
+            return source;
+        }
+
+        Peer getRecd() {
+            return recd;
+        }
+
+        string getDate() {
+            return date;
         }
 
 };
@@ -83,16 +128,17 @@ class SentPeer {
         string date;
 
     public:
-    SentPeer(Peer p, Peer s, string d) : dest(p), sent(s), date(d) {};
+        SentPeer(Peer p, Peer s, string d) : dest(p), sent(s), date(d) {};
 
-    string toString() {
-        return "Source: " + dest.getAddress() + " -- Recieved: " + sent.getAddress() + " -- Date: " + date;
-    }
+        string toString() {
+        return dest.getAddress() + " " + sent.getAddress() + " " + date;
+        }
 };
 
 //Global data structures to keep track of peer information
 
 vector<Snippet> snippets;
 vector<RecdPeer> recievedPeers;
-vector<RecdPeer> activePeers;
-//Thread function definitions
+vector<SentPeer> sentPeers;
+vector<Peer> allPeers;
+vector<RecdPeer> recievedFromRegistry;
