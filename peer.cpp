@@ -12,7 +12,7 @@ using namespace std;
 #include<iostream>
 #include<fstream>
 #include<vector>
-#include<chrono>
+#include<ctime>
 
 
 //Classes to keep track of Peers, Snippets, and UDP messages sent between peers
@@ -21,7 +21,7 @@ class Peer {
     private:
         string ip;
         string port;
-        int seconds_since_active;
+        long seconds_since_active;
 
     public:
         Peer(string addr) {
@@ -49,15 +49,13 @@ class Peer {
         }
 
         void setActive() {
-            auto temp = std::chrono::system_clock::now().time_since_epoch().count();
-            seconds_since_active = (int) temp;
+            long temp = (long)time(0);
+            seconds_since_active = temp;
         }
 
         bool active() {
-            int current_time;
-            auto temp = std::chrono::system_clock::now().time_since_epoch().count();
-            current_time = (int) temp;
-            if (current_time - seconds_since_active > 10) {
+            long current_time = (long)time(0);
+            if ((current_time - seconds_since_active) > 20) {
                 return false;
             } else {
                 return true;

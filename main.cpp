@@ -28,15 +28,14 @@ using namespace std;
 #include <mutex>
 #include <unistd.h>
 #include <algorithm>
+#include <future>
 #include "peer.cpp"
 
 // Macros
 #define SERVER_PORT 55921
-#define PEER_PORT 55922
-//#define SERVER_IP "169.254.126.124"
+#define PEER_PORT 45922
 #define SERVER_IP "136.159.5.27"
-//#define SERVER_IP "50.99.205.82"
-#define SIZE_OF_BUF 1000
+#define SIZE_OF_BUF 4096
 #define TEAMNAME "Pacheco\n"
 
 // Data structures
@@ -46,13 +45,15 @@ int sock_fd, udp_sockfd;
 typedef struct sockaddr_in sockaddr_in;
 sockaddr_in server;
 atomic <bool> finished;
-string snip_string = "", peer_string = "", ipAddress;
+string snip_string = "", peer_string = "", ipAddress, messageInput = "";
 mutex mutex_snip, mutex_peer;
 struct sockaddr_in servaddr, cliaddr;
+ssize_t resultSize;
+vector<char> bufIn(SIZE_OF_BUF);
 
 // Functions
 void sendCode();
-void recievePeers(char * peers);
+void recievePeers(string peers);
 string createReport();
 string getIPAddress();
 void registryConnect();
@@ -63,6 +64,8 @@ string getDate();
 int findPeer(vector<Peer> vec, Peer peer);
 void sendPeerMessages(string message);
 string getTimestamp();
+string getMenuInput();
+bool isValidAddress(string address);
 
 // Thread Functions
 void processSnip();
@@ -88,8 +91,8 @@ int main(int argc, char** argv) {
     registryConnect();
     // Keep a UDP port open to send and recieve messages to/from other peers
     peerConnect();
-    cout << "done with peers" << endl;
     finished = false;
+    cout << "here" << endl;
     // Connect to the registry after given the stop command, signalling that 
     // the registry is shutting down
     registryConnect();
@@ -118,7 +121,6 @@ void registryConnect() {
     int error = connect(sock_fd , (struct sockaddr *)&server , sizeof(server));
 	if (error < 0) 
 	{
-        cout << "Error: " << error << endl;
         close(sock_fd);
 		puts("connect error");
 		exit(EXIT_FAILURE);
@@ -133,7 +135,8 @@ void registryConnect() {
         }
         else {
             cout << "Waiting for server.." << endl;
-            if ( recv(sock_fd, output, sizeof(output), 0) < 0) {
+            resultSize = recv(sock_fd, output, sizeof(output), 0);
+            if (resultSize < 0) {
                     close(sock_fd);
                     puts("Failed to recieve from server");
                     exit(EXIT_FAILURE);
@@ -181,21 +184,32 @@ void registryConnect() {
         // a new line in the form Source IP:Port,Date,# of Peers, Peer data (multiple peers possible)
         else if (strcmp(line,"receive peers") == 0) {
 
-            //Send another recv request to the server to recieve the peers
+            //Send more recv requests to the server to recieve the peers
             //The initial request only sends the line "receive peers"
-            
-            memset(output, 0, sizeof(output));
-            memset(input, 0, sizeof(input));
-            ssize_t result = 1;
-            while (result > 0) {
-                result = recv(sock_fd, input, sizeof(input), MSG_WAITALL);
-                cout << "test: " << result << "\n----" << string(input) << endl;
-                strcat(output, input);
-                memset(input, 0, sizeof(input));
+            string s;
+            line = strtok(NULL, "\n");
+            //Checks to see if there more information in the original message
+            while (line != NULL) {
+                s.append(string(line));
+                s.append("\n");
+                line = strtok(NULL, "\n");
             }
-            cout << output << endl;
+
+            string partial;
+            int end = 0;
+            while (true) {
+                resultSize = recv(sock_fd, &bufIn[0], bufIn.size(), 0);
+                if (resultSize < 0) {
+                    break;
+                }
+                partial = string(bufIn.begin(), bufIn.end());
+                s.append(partial);
+                if (s.find("close\n", 0) != string::npos) {
+                    break;
+                }
+            }
             cout << "Adding new peers from source: " << SERVER_IP << ":" << to_string(SERVER_PORT) << "." <<endl;
-            recievePeers(output);
+            recievePeers(s);
 
         }
         // If the response is "get report\n", create a report of all unique peers and all sources (including duplicates)
@@ -203,12 +217,10 @@ void registryConnect() {
         else if (strcmp(line, "get report") == 0) {
             cout << "Creating report" << endl;
             string report = createReport();
-            string newReport = "123456\n";
-            newReport.append(report);
             cout << "Sending Report." << endl;
             memset(input, 0, sizeof(input));
-            strcpy(input, "report\n");
-            int i = send(sock_fd, newReport.c_str(), newReport.size(), 0);
+            strcpy(input, report.c_str());
+            int i = send(sock_fd, input, sizeof(input), 0);
             if (i < 0) {
                 close(sock_fd);
                 puts("Failed to send report to server");
@@ -220,13 +232,6 @@ void registryConnect() {
         else if (strcmp(line,"close") == 0) {
             cout << "Closing server connection" << endl;
             break;
-        }
-        else if (strcmp(line,"stop") == 0) {
-            if (send(sock_fd, "test\n", 6, 0) < 0) {
-                close(sock_fd);
-                puts("Failed to send report to server");
-                exit(1);
-            }
         }
         else {
             cout << "Bad Server Response" << endl;
@@ -242,8 +247,6 @@ When a request comes in, it signals to different threads in order
 to process the request
 */
 void peerConnect() {
-    cout << "Listening for peers"<< endl;
-            
     // Set up UDP Server to listen for peer messages
     // *** Some code taken from https://www.geeksforgeeks.org/udp-server-client-implementation-c/ ***
 
@@ -260,7 +263,6 @@ void peerConnect() {
     servaddr.sin_family    = AF_INET; // IPv4
     servaddr.sin_addr.s_addr = INADDR_ANY;
     servaddr.sin_port = htons(PEER_PORT);
-        
     // Bind the socket with the server address
     if ( bind(udp_sockfd, (const struct sockaddr *)&servaddr, 
             sizeof(servaddr)) < 0 )
@@ -269,32 +271,44 @@ void peerConnect() {
         exit(EXIT_FAILURE);
     }
     int n;
-
-        thread snip(&processSnip);
-        thread peer(&processPeer);
-        thread menu(&endUserMenu);
-        thread send(&sendPeersPeriodically);
-
     setSnipString("");
     setPeerString("");
-    while(!finished) {
-        cout << "UDP Server listening.." << endl;
-        socklen_t len = sizeof(cliaddr);  
 
-        n = recvfrom(udp_sockfd, (char *)input, SIZE_OF_BUF, 
+    //Start up thread functions
+    thread snip(&processSnip);
+    thread peer(&processPeer);
+    thread menu(&endUserMenu);
+    thread send(&sendPeersPeriodically);
+
+    while(!finished) {
+        cout << "UDP Server listening.. " << endl;
+        socklen_t len = sizeof(cliaddr);  
+        memset(input, 0, sizeof(input));
+        n = recvfrom(udp_sockfd, input, SIZE_OF_BUF, 
                     MSG_WAITALL, ( struct sockaddr *) &cliaddr, &len);
-        cout << "test" << endl;
         string message = string(input);
         cout << "New UDP Message:\n" << message << endl;
         string line = message.substr(0,4);
-        char * ipString = inet_ntoa(cliaddr.sin_addr);
-        string portString = to_string(cliaddr.sin_port);
+        char * ipString = inet_ntoa((*(sockaddr_in*)&cliaddr).sin_addr);
+        string portString = to_string(ntohs(cliaddr.sin_port));
         if ((line.compare("stop") == 0) || finished) {
+            message = "ack";
+            message.append(TEAMNAME);
+            if (line.compare("stop") == 0) {
+                //Send ack back to sender of the stop message
+                if (sendto(udp_sockfd, message.c_str(), message.size(), 0, (struct sockaddr *) &cliaddr, sizeof(cliaddr)) < 0) {
+                    cerr << "Error sending ack." << endl;
+                }
+                else {
+                    cout << "Successfully sent ack" << endl;
+                }
+            }
+
             finished = true;
             cout << "Waiting for threads to finish execution.." << endl;
+            menu.detach();
             snip.join();
             peer.join();
-            menu.join();
             send.join();
             sendPeerMessages("stop");
             cout << "Initiating shutdown procedure." << endl;
@@ -302,7 +316,6 @@ void peerConnect() {
         }
 
         else if (line.compare("snip") == 0) {
-            cout << "testsnip" << endl;
             message.append(",");
             message.append(ipString);
             message.append(":");
@@ -314,7 +327,6 @@ void peerConnect() {
         }
 
         else if (line.compare("peer") == 0) {
-            cout << "testpeer" << endl;
             message.append(",");
             message.append(ipString);
             message.append(":");
@@ -405,25 +417,33 @@ void sendCode() {
 Receives the list of original peers from the registry, and adds these
 peers into into the allPeers vector and the recievedFromRegistry vector.
 */
-void recievePeers(char * peers) {
-    char * line = strtok(peers, "\n");
-    cout << "Adding " << string(line) << " new peer(s)." << endl;
+void recievePeers(string peers) {
+    istringstream input(peers);
+    string line;
+    getline(input, line);
+    cout << "Adding " << line << " new peer(s)." << endl;
     string date = getDate();
     Peer source(string(SERVER_IP) + ":" + to_string(SERVER_PORT));
-    line = strtok(NULL, "\n");
     //Add all peers recieved from the registry to the vector 'recievedPeers'
-    while (line != NULL) {
-        cout << line << endl;
-        if (strcmp(line, "close") == 0) {
+    while (getline(input, line)) {
+        string word;
+        for (char c : line) {
+            if (c != '\0') {
+                word.push_back(c);
+            }
+        }
+        if ((word == "close") || (word == "close\n")) {
             finished = true;
             return;
         }
-        Peer newPeer = Peer(string(line)); 
-        allPeers.push_back(newPeer);
-        RecdPeer recPeer(source, newPeer, date);
-        recievedFromRegistry.push_back(recPeer);
-        cout << "Peer added: " << recPeer.toString() << endl;
-        line = strtok(NULL, "\n");
+        cout << word << endl;
+        if (isValidAddress(word)) {
+            Peer newPeer = Peer(string(word)); 
+            allPeers.push_back(newPeer);
+            RecdPeer recPeer(source, newPeer, date);
+            recievedFromRegistry.push_back(recPeer);
+            cout << "Peer added: " << recPeer.toString() << endl;
+        }
     }
 }
 /*
@@ -432,7 +452,8 @@ and returns that string.
 */
 string createReport() {
     string strOutput = "", temp = "", date = "invalid date";
-    strOutput.append(to_string(allPeers.size())).append("\n");
+    temp = to_string(allPeers.size());
+    strOutput.append(temp).append("\n");
     for (Peer peer : allPeers) {
         strOutput.append(peer.getAddress()).append("\n");
     }
@@ -461,34 +482,10 @@ string createReport() {
     }
     return strOutput;
 }
-
-/*** Code taken from https://gist.github.com/quietcricket/2521037 ***
+/*
 * Gets the IP address of the current machine and returns its as a string 
 */
 string getIPAddress(){
-    /*
-    string ipAddress="Unable to get IP Address";
-    struct ifaddrs *interfaces = NULL;
-    struct ifaddrs *temp_addr = NULL;
-    int success = 0;
-    // retrieve the current interfaces - returns 0 on success
-    success = getifaddrs(&interfaces);
-    if (success == 0) {
-        // Loop through linked list of interfaces
-        temp_addr = interfaces;
-        while(temp_addr != NULL) {
-            if(temp_addr->ifa_addr->sa_family == AF_INET) {
-                // Check if interface is en0 which is the wifi connection on the iPhone
-                if(strcmp(temp_addr->ifa_name, "en0")){
-                    ipAddress=inet_ntoa(((struct sockaddr_in*)temp_addr->ifa_addr)->sin_addr);
-                }
-            }
-            temp_addr = temp_addr->ifa_next;
-        }
-    }
-    // Free memory
-    freeifaddrs(interfaces);
-    */
     return ipAddress;
 }
 
@@ -504,7 +501,7 @@ void processSnip() {
 
     while (!finished) {
         if (snip_string.empty()) {
-            sleep(5);
+            sleep(3);
         }
         else {
             cout << "Processing snip request." << endl;
@@ -513,7 +510,7 @@ void processSnip() {
             timestamp = stoi(info.substr(0, delim1));
             delim2 = (int) info.find_last_of(",");
             Peer source(info.substr(delim2+1, info.size() - delim2));
-            message = info.substr(delim1, info.size() - delim1 - delim2);
+            message = info.substr(delim1+1, info.size() - (source.getAddress().size()+delim1+2));
             Snippet snip(timestamp, message, source, getDate());
             snippets.push_back(snip);
             cout << "Sucessfully added snippet: " << snip.toString() << endl;
@@ -539,7 +536,8 @@ void processPeer() {
             info = peer_string;
             info.erase(std::remove_if(info.begin(), info.end(), ::isspace), info.end());
             delim = info.find(",");
-            if (delim < 10) {
+            if (!isValidAddress(info.substr(0, delim))) {
+                cout << info.substr(0, delim) << endl;
                 cerr << "Bad peer. Failed to add." << endl;
                 setPeerString("");
             }
@@ -571,6 +569,7 @@ void processPeer() {
 /*
 Menu for the end user. The user can type 1 and then type a message they would like to send.
 The user can type 2 to see a current report of users and snippets.
+*** https://stackoverflow.com/questions/6171132/non-blocking-console-input-c *** was used for non-blocking input
 */
 void endUserMenu() {
     string menuMsg = "Welcome to the peer menu.\nType '1' to send your own message to other peers.\nType '2' to print out a the current report\nType anything else to bring back the menu screen.";
@@ -581,15 +580,13 @@ void endUserMenu() {
     while (!finished) {
         cout << menuMsg << endl;
         cin.getline(cinput, 256);
-        if (strcmp(cinput, "1") == 0) {
+        if (finished) return;
+        else if (strcmp(cinput, "1") == 0) {
             cout << "Please type your message now:" << endl;
             cin.getline(cinput, 256);
             message = "snip";
             timestamp = getTimestamp();
             message.append(timestamp).append(" ").append(cinput);
-            Peer source(sourceAddr);
-            Snippet newSnip(stoi(timestamp), cinput, source ,getDate());
-            snippets.push_back(newSnip);
             sendPeerMessages(message);
         }
         else if (strcmp(cinput, "2") == 0) {
@@ -609,6 +606,7 @@ void endUserMenu() {
         }
     }
 }
+
 /*
 * Every 10 seconds, this thread will send a random peer address to all other active
 * peers that it knows.
@@ -637,7 +635,11 @@ void sendPeerMessages(string message) {
     struct sockaddr_in destAddr;
     string sourceAddr = getIPAddress().append(":").append(to_string(PEER_PORT));
     Peer source(sourceAddr);
+
     for (Peer peer : allPeers) {
+        if (peer.getIP() == getIPAddress() && peer.getPort() == to_string(PEER_PORT)) {
+            peer.setActive();
+        }
         if (peer.active()) {
             destAddr.sin_family = AF_INET;
             int port = stoi(peer.getPort());
@@ -645,7 +647,7 @@ void sendPeerMessages(string message) {
             destAddr.sin_addr.s_addr = inet_addr(peer.getIP().c_str());
             SentPeer sent(source, peer, message);
             if (sendto(udp_sockfd, message.c_str(), message.size(), 0, (struct sockaddr *) &destAddr, sizeof(destAddr)) < 0) {
-                cerr << "Error sending peer message" << endl;
+                cerr << "Error sending peer message: " << errno << endl;
             }
             else {
                 cout << "Successfully sent message: " << message << "  to: " << peer.getAddress() << endl;
@@ -714,4 +716,60 @@ string getTimestamp() {
         }
     }
     return to_string(current);
+}
+
+/*
+Checks to see if the input string is a valid ip address and port
+*/
+bool isValidAddress(string address) {
+    int colon = (int)address.find(":");
+    int lastColon = (int)address.find_last_of(":");
+    //Returns false if there are more than one colon in the address
+    if (colon != lastColon) {
+        return false;
+    }
+    //Returns false if there is a bad character in the address
+    for (char ch : address) {
+        if (!(isdigit(ch)) && !(ch == '.') && !(ch == ':')) {
+            return false;
+        }
+    }
+    int it, num;
+    string str;
+    //Test for valid port
+    try {
+        str = address.substr(colon+1, address.size()-colon);
+        //Returns false if the port number is out of range the valid range
+        num = stoi(str);
+        if ((num > 65535) || (num < 0)) {
+            return false;
+        }
+    } catch (exception e) {
+        return false;
+    }
+
+    //Test for valid ip
+    str = address.substr(0, colon);
+    string substr;
+    for (int j=0; j < 3; j++) {
+        it = (int) str.find(".");
+        if (it == str.npos) {
+            return false;
+        }
+        substr = str.substr(0,it);
+        try {
+            num = stoi(substr);
+            if ((num > 255) || (num < 0)) return false;
+            str = str.erase(0,it+1);
+        } catch (exception e) {
+            return false;
+        }
+    }
+    try {
+        num = stoi(str);
+        if ((num > 255) || (num < 0)) return false;
+    } catch (exception e) {
+        return false;
+    }
+    return true;
 }
