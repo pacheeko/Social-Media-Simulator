@@ -55,6 +55,7 @@ vector<char> bufIn(SIZE_OF_BUF);
 void sendCode();
 void recievePeers(string peers);
 string createReport();
+void sendReport();
 string getIPAddress();
 void registryConnect();
 void peerConnect();
@@ -64,8 +65,8 @@ string getDate();
 int findPeer(vector<Peer> vec, Peer peer);
 void sendPeerMessages(string message);
 string getTimestamp();
-string getMenuInput();
 bool isValidAddress(string address);
+void sendOverTCP(string message);
 
 // Thread Functions
 void processSnip();
@@ -143,7 +144,8 @@ void registryConnect() {
                 }
             cout << "Incoming message: " << string(output) << endl;
         }
-        strcpy(outputCopy, output);
+        memset(outputCopy, 0, sizeof(outputCopy));
+        strncpy(outputCopy, output, 100);
         line = strtok(outputCopy,"\n");
         // If response is "get team name\n", simply send the TEAMNAME back to the server.
         // The team name is 'Pacheco'.
@@ -215,18 +217,8 @@ void registryConnect() {
         // If the response is "get report\n", create a report of all unique peers and all sources (including duplicates)
         // that are found in the "peers.txt file"
         else if (strcmp(line, "get report") == 0) {
-            cout << "Creating report" << endl;
-            string report = createReport();
             cout << "Sending Report." << endl;
-            memset(input, 0, sizeof(input));
-            strcpy(input, report.c_str());
-            int i = send(sock_fd, input, sizeof(input), 0);
-            if (i < 0) {
-                close(sock_fd);
-                puts("Failed to send report to server");
-                exit(1);
-            }
-            
+            sendReport();
         }
         // If the response is "close\n", simply close the server connection and break from the loop
         else if (strcmp(line,"close") == 0) {
@@ -355,61 +347,33 @@ void sendCode() {
         ifstream codeFile;
         int length, delim = 0;
         codeFile.open("main.cpp");      // open input file
-        memset(largeBuffer, 0, sizeof(largeBuffer));
-        strcpy(largeBuffer, "cpp\nStart of main.cpp\n");
-        if (send(sock_fd, largeBuffer, sizeof(largeBuffer), 0) < 0) {
-            close(sock_fd);
-            puts("Failed to send code to server");
-            exit(EXIT_FAILURE);
-        }
-        stringstream strStream;
-        strStream << codeFile.rdbuf();         // read file into the stringstream
-        string str = strStream.str();
-        while (delim < str.size()) {
-            memset(largeBuffer, 0, sizeof(largeBuffer));
-            strcpy(largeBuffer, str.substr(delim, 8000).c_str());
-            if (send(sock_fd, largeBuffer, sizeof(largeBuffer), 0) < 0) {
-                close(sock_fd);
-                puts("Failed to send code to server");
-                exit(EXIT_FAILURE);
-            }
-            delim += 8000;
-        }
-        length = delim - str.size();
-        memset(largeBuffer, 0, sizeof(largeBuffer));
-        strcpy(largeBuffer, str.substr(delim-8000, length).c_str());
-        strcat(largeBuffer,"\nStart of peer.cpp\n");
-        if (send(sock_fd, largeBuffer, sizeof(largeBuffer), 0) < 0) {
-                close(sock_fd);
-                puts("Failed to send code to server");
-                exit(EXIT_FAILURE);
-        }
-        codeFile.close();
+        sendOverTCP("cpp\nStart of main.cpp\n");
 
-        codeFile.open("peer.cpp");
-        strStream << codeFile.rdbuf();
-        str = strStream.str();
-        delim = 0;
-        while (delim < str.size()) {
-            memset(largeBuffer, 0, sizeof(largeBuffer));
-            strcpy(largeBuffer, str.substr(delim, 8000).c_str());
-            if (send(sock_fd, largeBuffer, sizeof(largeBuffer), 0) < 0) {
-                close(sock_fd);
-                puts("Failed to send code to server");
-                exit(EXIT_FAILURE);
+        string line;
+        while (getline(codeFile, line)) {
+            string trimmedLine;
+            for (char c : line) {
+                if (c != '\0') {
+                    trimmedLine.push_back(c);
+                }
             }
-            delim += 8000;
+            sendOverTCP(trimmedLine.append("\n"));
         }
-        length = delim - str.size();
-        memset(largeBuffer, 0, sizeof(largeBuffer));
-        strcpy(largeBuffer, str.substr(delim-8000, length).c_str());
-        strcat(largeBuffer, "\n..");
-        strcat(largeBuffer, ".\n");
-        if (send(sock_fd, largeBuffer, sizeof(largeBuffer), 0) < 0) {
-                close(sock_fd);
-                puts("Failed to send code to server");
-                exit(EXIT_FAILURE);
+        sendOverTCP("\nStart of peer.cpp\n");
+        codeFile.close();
+        codeFile.open("peer.cpp");
+        while (getline(codeFile, line)) {
+            string trimmedLine;
+            for (char c : line) {
+                if (c != '\0') {
+                    trimmedLine.push_back(c);
+                }
+            }
+            sendOverTCP(trimmedLine.append("\n"));
         }
+        line = "\n..";
+        line.append(".\n");
+        sendOverTCP(line);
         codeFile.close();                   // close file
 }
 
@@ -436,7 +400,6 @@ void recievePeers(string peers) {
             finished = true;
             return;
         }
-        cout << word << endl;
         if (isValidAddress(word)) {
             Peer newPeer = Peer(string(word)); 
             allPeers.push_back(newPeer);
@@ -447,13 +410,46 @@ void recievePeers(string peers) {
     }
 }
 /*
+Creates and send the report line by line
+*/
+void sendReport() {
+    string date = "invalid date";
+    sendOverTCP(to_string(allPeers.size()));
+    sendOverTCP("\n");
+    for (Peer peer : allPeers) {
+        sendOverTCP(peer.getAddress().append("\n"));
+    }
+    sendOverTCP("1\n");
+    string registryAddress = SERVER_IP;
+    registryAddress.append(":").append(to_string(SERVER_PORT));
+    registryAddress.append("\n");
+    sendOverTCP(registryAddress);
+    sendOverTCP(recievedFromRegistry[0].getDate().append("\n"));
+    sendOverTCP(to_string(recievedFromRegistry.size()).append("\n"));
+    for (RecdPeer peer : recievedFromRegistry) {
+        sendOverTCP(peer.getRecd().getAddress().append("\n"));
+    } 
+    sendOverTCP(to_string(recievedPeers.size()).append("\n"));
+    for (RecdPeer peer : recievedPeers) {
+        sendOverTCP(peer.toString().append("\n"));
+    }
+    sendOverTCP(to_string(sentPeers.size()).append("\n"));
+    for (SentPeer peer : sentPeers) {
+        sendOverTCP(peer.toString().append("\n"));
+    }
+    sendOverTCP(to_string(snippets.size()).append("\n"));
+    for (Snippet snip : snippets) {
+        sendOverTCP(snip.toString().append("\n"));
+    }
+}
+
+/*
 Encapsulates all information about peers and snippets into one string
 and returns that string.
 */
 string createReport() {
     string strOutput = "", temp = "", date = "invalid date";
-    temp = to_string(allPeers.size());
-    strOutput.append(temp).append("\n");
+    strOutput.append(to_string(allPeers.size())).append("\n");
     for (Peer peer : allPeers) {
         strOutput.append(peer.getAddress()).append("\n");
     }
@@ -482,6 +478,7 @@ string createReport() {
     }
     return strOutput;
 }
+
 /*
 * Gets the IP address of the current machine and returns its as a string 
 */
@@ -772,4 +769,16 @@ bool isValidAddress(string address) {
         return false;
     }
     return true;
+}
+
+void sendOverTCP(string message) {
+
+    memset(output, 0, sizeof(output));
+    strcpy(output, message.c_str());
+    int i = send(sock_fd, output, message.size(), 0);
+    if (i < 0) {
+        close(sock_fd);
+        puts("Failed to send message to server");
+        exit(1);
+    }
 }

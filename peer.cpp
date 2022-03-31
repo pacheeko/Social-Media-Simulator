@@ -129,7 +129,7 @@ class SentPeer {
         SentPeer(Peer p, Peer s, string d) : dest(p), sent(s), date(d) {};
 
         string toString() {
-        return dest.getAddress() + " " + sent.getAddress() + " " + date;
+            return dest.getAddress() + " " + sent.getAddress() + " " + date;
         }
 };
 
